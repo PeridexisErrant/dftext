@@ -2,13 +2,17 @@
 
 import argparse, struct, sys, zlib
 
-class CompatError(Exception): pass
+PY_2 = sys.version_info[0] == 2
+
 class ParserError(Exception): pass
 class ParserDecodeError(ParserError): pass
 
-PY_VERSION = sys.version_info[0]
-if PY_VERSION != 2:
-    raise CompatError('Python %i not supported' % PY_VERSION)
+def convert(func, string):
+    """Convert between string and bytes on Py3."""
+    if PY_2:
+        return string
+    return func(string, encoding='cp437')
+
 class ArgParser:
     def __init__(self):
         self.arg_parser = argparse.ArgumentParser()
@@ -44,11 +48,11 @@ class Parser:
     def index_scramble(self, text):
         text = list(text)
         for i, ch in enumerate(text):
-            text[i] = chr(255 - (i % 5) - ord(ch))
-        return ''.join(text)
+            text[i] = chr(255 - (i % 5) - (ord(ch) if PY_2 else ch))
+        return convert(bytes, ''.join(text))
 
     def decode(self, in_text, index=False):
-        decompressed = ''
+        decompressed = b''
         chunk_id = 1
         while in_text:
             try:
@@ -74,20 +78,22 @@ class Parser:
             decompressed = decompressed[6:]
             if record_length != record_length_2:
                 raise ParserDecodeError('Record lengths do not match')
-            record, decompressed = decompressed[:record_length], decompressed[record_length:]
+            record = decompressed[:record_length]
+            decompressed = decompressed[record_length:]
             if index:
                 record = self.index_scramble(record)
             records.append(record)
-        return '\n'.join(records) + '\n'
+        return convert(str, b'\n'.join(records) + b'\n')
 
     def decode_file(self, in_file, *args, **kwargs):
         return self.decode(self.read_file(in_file), *args, **kwargs)
 
     def encode(self, in_text, index=False, level=zlib.Z_DEFAULT_COMPRESSION):
-        records = in_text.rstrip('\n').split('\n')
-        out_text = ''.join([struct.pack('<LH', len(record), len(record))
-                            + (self.index_scramble(record) if index else record)
-                            for record in records])
+        records = [s.strip() for s in in_text.strip(b'\n').split(b'\n')]
+        out_text = b''.join([
+            struct.pack('<LH', len(record), len(record)) +
+            (self.index_scramble(record) if index else record)
+            for record in records])
         out_text = struct.pack('<L', len(records)) + out_text
         out_text = zlib.compress(out_text, level)
         out_text = struct.pack('<L', len(out_text)) + out_text
